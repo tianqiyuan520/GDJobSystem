@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="JobSystem" inherits="RefCounted" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Static facade for the GDJobSystem scheduler.
+	</brief_description>
+	<description>
+		A GDExtension plugin exposing a multi-threaded Job System to GDScript. Call [method initialize] once, then schedule work with [method schedule], [method schedule_for] or [method schedule_parallel_for]. Callbacks run on worker threads: keep them free of scene-tree access.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="initialize" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="threads" type="int" default="0" />
+			<description>
+				Initializes the scheduler with the given number of worker threads (0 = auto). Idempotent. Enables the JobCostCache adaptive tile-learning strategy by default.
+			</description>
+		</method>
+		<method name="set_job_cost_cache_enabled" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Enables or disables per-job cost EWMA adaptive tile learning. When enabled, batch sizes are solved per job from measured per-element cost; when disabled, a static tiles-per-worker heuristic is used.
+			</description>
+		</method>
+		<method name="is_job_cost_cache_enabled" qualifiers="static">
+			<return type="bool" />
+			<description>
+				Returns whether adaptive tile learning is currently enabled.
+			</description>
+		</method>
+		<method name="set_implicit_batch_enabled" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Enables or disables native implicit batching. While enabled, tile-path jobs submitted from the main thread are collected and submitted together at the next flush point (single wake), Unity ScheduleBatchedJobs-style. complete(), is_completed() and flush_pending_submits() act as flush points.
+			</description>
+		</method>
+		<method name="flush_pending_submits" qualifiers="static">
+			<return type="void" />
+			<description>
+				Force-flushes all collected pending jobs with a single wake. Call once per frame (e.g. end of frame) when implicit batching is enabled.
+			</description>
+		</method>
+		<method name="shutdown" qualifiers="static">
+			<return type="void" />
+			<description>
+				Stops all workers and releases scheduler resources.
+			</description>
+		</method>
+		<method name="get_worker_count" qualifiers="static">
+			<return type="int" />
+			<description>
+				Returns the number of persistent worker threads.
+			</description>
+		</method>
+		<method name="get_version" qualifiers="static">
+			<return type="String" />
+			<description>
+				Returns the version of the GDJobSystem plugin.
+			</description>
+		</method>
+		<method name="schedule" qualifiers="static">
+			<return type="JobSystemHandle" />
+			<param index="0" name="callable" type="Callable" />
+			<param index="1" name="dependencies" type="Array" default="[]" />
+			<description>
+				Schedules a callable to run once on a worker thread. The returned handle completes when the job finishes.
+			</description>
+		</method>
+		<method name="schedule_for" qualifiers="static">
+			<return type="JobSystemHandle" />
+			<param index="0" name="length" type="int" />
+			<param index="1" name="callable" type="Callable" />
+			<param index="2" name="dependencies" type="Array" default="[]" />
+			<description>
+				Schedules callable(index) for index in [0, length) as a sequential job.
+			</description>
+		</method>
+		<method name="schedule_parallel_for" qualifiers="static">
+			<return type="JobSystemHandle" />
+			<param index="0" name="length" type="int" />
+			<param index="1" name="callable" type="Callable" />
+			<param index="2" name="batch_size" type="int" default="0" />
+			<param index="3" name="dependencies" type="Array" default="[]" />
+			<description>
+				Schedules callable(index) for index in [0, length) split into batches of batch_size items executed in parallel across workers (0 = automatic).
+			</description>
+		</method>
+		<method name="combine_dependencies" qualifiers="static">
+			<return type="JobSystemHandle" />
+			<param index="0" name="handles" type="Array" />
+			<description>
+				Combines multiple JobSystemHandle into one handle that completes when all of them complete.
+			</description>
+		</method>
+	</methods>
+</class>

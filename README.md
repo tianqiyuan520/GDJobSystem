@@ -1,56 +1,86 @@
-# godot-cpp template
-This repository serves as a quickstart template for GDExtension development with Godot 4.0+.
+# GDJobsystem
 
-## Contents
-* Preconfigured source files for C++ development of the GDExtension ([src/](./src/))
-* An empty Godot project in [project/](./project), to test the GDExtension
-* godot-cpp as a submodule (`godot-cpp/`)
-* GitHub Issues template ([.github/ISSUE_TEMPLATE.yml](./.github/ISSUE_TEMPLATE.yml))
-* GitHub CI/CD workflows to publish your library packages when creating a release ([.github/workflows/builds.yml](./.github/workflows/builds.yml))
-* An SConstruct file with various functions, such as boilerplate for [Adding documentation](https://docs.godotengine.org/en/stable/tutorials/scripting/cpp/gdextension_docs_system.html)
+A Godot 4 multi-threaded Job System GDExtension plugin (C++), built on the [godot-cpp template](https://github.com/godotengine/godot-cpp-template).
 
-## Usage - Template
+## Architecture
 
-To use this template, log in to GitHub and click the green "Use this template" button at the top of the repository page. This will let you create a copy of this repository with a clean git history.
+Two independent pieces, both under `project/addons/GDJobsystem/`:
 
-To get started with your new GDExtension, do the following:
+| Piece | What it provides | Loaded by |
+|---|---|---|
+| **GDExtension** (`bin/gd_job_system.gdextension` + DLL) | `JobSystem` / `JobSystemHandle` classes, usable from GDScript at runtime | Godot scans `.gdextension` automatically |
+| **Editor plugin** (`plugin.gd` + `monitor/`) | "JobSystem 监控器" debugger tab (Gantt timeline, stats, activity, JobCostCache) | `[editor_plugins]` in `project.godot` |
 
-* clone your repository to your local computer
-* initialize the godot-cpp git submodule via `git submodule update --init`
-* change the name of the compiled library file inside the [SConstruct](./SConstruct) file by modifying the `libname` string.
-  * change the paths of the to be loaded library name inside the [project/bin/example.gdextension](./project/bin/example.gdextension) file, by replacing `EXTENSION-NAME` with the name you chose for `libname`.
-* change the `entry_symbol` string inside [project/bin/example.gdextension](./project/bin/example.gdextension) file.
-  * rename the `example_library_init` function in [src/register_types.cpp](./src/register_types.cpp) to the same name you chose for `entry_symbol`.
-* change the name of the `project/bin/example.gdextension` file
+The kernel (Chase-Lev work-stealing scheduler, MPMC injector, tile-based parallel execution) lives in [src/native](./src/native/) and is kept **verbatim from EntJoy's `NativeDll`** so it can be re-copied on updates. The binding layer (`src/job_system.*`) adapts it to GDScript. C++20 and exceptions are required.
 
-Now, you can build the project with the following command:
+## GDScript usage
+
+```gdscript
+JobSystem.initialize(2)                     # worker threads (0 = auto)
+
+var h := JobSystem.schedule(func():
+	print("hello from a worker thread"))
+h.complete()                                 # block until done
+
+var out := PackedInt32Array(); out.resize(1000)
+var hp := JobSystem.schedule_parallel_for(1000, func(i: int):  # batch_size optional (0 = auto)
+	out[i] = i)
+hp.complete()                                # out[i] == i for all i
+
+var h1 := JobSystem.schedule(func(): pass)
+var h2 := JobSystem.schedule(func(): pass, [h1])   # runs after h1
+var both := JobSystem.combine_dependencies([h1, h2])
+var h3 := JobSystem.schedule(func(): pass, [both])
+h3.complete()
+
+JobSystem.shutdown()
+```
+
+Full API (static `JobSystem`): `initialize`, `shutdown`, `get_worker_count`, `schedule`, `schedule_for`, `schedule_parallel_for`, `combine_dependencies`, `set_job_cost_cache_enabled` / `is_job_cost_cache_enabled`, `set_implicit_batch_enabled`, `flush_pending_submits`, `debugger_poll`, `get_stats_snapshot`, `get_job_cost_cache_slots`. `JobSystemHandle`: `complete`, `is_completed`.
+
+## Editor monitor
+
+Run the game from the editor (F5) and open the **Debugger** panel → **JobSystem 监控器** tab:
+
+- **Timeline**: zoomable Gantt (Ctrl+wheel zoom, drag pan, click to inspect, double-click re-live), duration-colored bars, W lanes + M (main thread), aggregation when many segments are visible. Pause/Live button freezes the whole stream (editor → game control message).
+- **Stats** / **Activity** / **JobCostCache**: scheduler counters, execution-window list (selectable/copyable), learned per-job cost models.
+
+The data flows game → editor over `EngineDebugger` messages (`gd_job_system:*`); see `monitor/monitor_plugin.gd` for the protocol.
+
+## Constraints
+
+- Callbacks run on worker threads: do **not** touch the scene tree or node state inside a job.
+- Dependency graphs must be acyclic; the scheduler does no cycle detection (a cycle makes `complete()` hang forever).
+- `shutdown()` must run on the same thread as `initialize()` (joining a worker from itself would deadlock). It drains all in-flight jobs first, so pending work completes before teardown.
+- If you edit `src/native/`, expect to be overwritten by the next EntJoy copy — keep your changes in the binding layer instead.
+
+## Benchmark
+
+[project/benchmark.gd](./project/benchmark.gd) compares identical GDScript math across three paths (main-thread loop, `WorkerThreadPool`, `JobSystem`), plus scaling and throughput sweeps. Results are checksum-validated. Sample run — **exported release build** (Godot 4.7, 15 workers):
+
+```
+1000000   elem: single   231.81 ms | pool    86.53 ms ( 2.68x) | job    69.67 ms ( 3.33x) | checksum ok=true
+4000000   elem: single   934.83 ms | pool   346.67 ms ( 2.70x) | job   261.88 ms ( 3.57x)
+submit+wait x5000 : job     7.96 ms | pool     8.40 ms
+schedule_for 352.62 ms vs schedule_parallel_for 60.81 ms (5.8x)
+```
+
+Notes: measured end-to-end from GDScript (per-element `Callable` + GDScript language lock), so absolute speedups (~3.5x on 15 cores) are far below ideal parallel scaling; native C++ work inside jobs scales much better. Auto batch (0) performs on par with hand-tuned sizes.
+
+## Extended tests
+
+[project/stress_tests.gd](./project/stress_tests.gd) holds 19 correctness/edge-case checks (bulk submit, nested jobs, 100-level chains, fan-in/out, lifecycle, shutdown-with-pending). Invoke manually: `preload("res://stress_tests.gd").run()` after `JobSystem.initialize()`.
+
+## Building
 
 ```shell
-scons
+git submodule update --init --recursive
+scons                # debug DLL into project/addons/GDJobsystem/bin/windows/
+scons target=template_release
 ```
 
-If the build command worked, you can test it with the [project](./project) project. Import it into Godot, open it, and launch the main scene. You should see it print the following line in the console:
+Import [project](./project) into Godot and run `job_demo.tscn` (frame-driven job demo). For an IDE, generate `compile_commands.json`:
 
-```
-Type: 24
-```
-
-### Configuring an IDE
-You can develop your own extension with any text editor and by invoking scons on the command line, but if you want to work with an IDE (Integrated Development Environment), you can use a compilation database file called `compile_commands.json`. Most IDEs should automatically identify this file, and self-configure appropriately.
-To generate the database file, you can run one of the following commands in the project root directory:
 ```shell
-# Generate compile_commands.json while compiling
 scons compiledb=yes
-
-# Generate compile_commands.json without compiling
-scons compiledb=yes compile_commands.json
 ```
-
-## Usage - Actions
-
-This repository comes with continuous integration (CI) through a GitHub action that tests building the GDExtension.
-It triggers automatically for each pushed change. You can find and edit it in [builds.yml](.github/workflows/ci.yml).
-
-There is also a workflow ([make_build.yml](.github/workflows/make_build.yml)) that builds the GDExtension for all supported platforms that you can use to create releases.
-You can trigger this workflow manually from the `Actions` tab on GitHub.
-After it is complete, you can find the file `godot-cpp-template.zip` in the `Artifacts` section of the workflow run.

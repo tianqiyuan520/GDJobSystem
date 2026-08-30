@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.17)
 if(CMAKE_C_COMPILER)
 endif()
 
-set(LIBNAME "EXTENSION-NAME") # "The name of the library"
+set(LIBNAME "GDJobSystem") # "The name of the library"
 set(GODOT_PROJECT_DIR "project" CACHE STRING "The directory of a Godot project folder")
 
 # Make sure all the dependencies are satisfied
@@ -24,6 +24,9 @@ if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/godot-cpp/src")
         COMMAND_ERROR_IS_FATAL ANY
     )
 endif()
+# The JobSystem kernel (src/native) needs C++ exceptions (std::exception_ptr);
+# godot-cpp's CMake module disables them by default.
+set(GODOTCPP_DISABLE_EXCEPTIONS OFF)
 add_subdirectory(godot-cpp SYSTEM)
 
 # When compiling for emscripten, this toolchainhack needs to be included.
@@ -55,9 +58,20 @@ target_sources(${LIBNAME}
     PRIVATE
     src/register_types.cpp
     src/register_types.h
-    src/example_class.cpp
-    src/example_class.h
+    src/job_system.cpp
+    src/job_system.h
+    src/native/JobSystem.cpp
+    src/native/JobSystem_State.cpp
+    src/native/JobSystem_Tiles.cpp
+    src/native/JobSystem_Scheduler.cpp
+    src/native/ChaseLevScheduler.cpp
+    src/native/JobProfiler.cpp
+    src/native/JobDebuggerGUI_stub.cpp
 )
+
+# JobSystem kernel requires C++20 (std::atomic::wait/notify) and exports
+# internal debug hooks guarded by JOB_SYSTEM_EXPORT.
+add_compile_definitions(JOB_SYSTEM_EXPORT)
 
 # Fetch a list of the xml files to use for documentation and add to our target
 file(GLOB_RECURSE DOC_XML LIST_DIRECTORIES NO CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/doc_classes/*.xml")
@@ -71,8 +85,8 @@ endif()
 
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
 
-# Require at least C++17 for this target
-set_property(TARGET ${LIBNAME} PROPERTY CXX_STANDARD 17)
+# Require at least C++20 for this target
+set_property(TARGET ${LIBNAME} PROPERTY CXX_STANDARD 20)
 
 set_target_properties(${LIBNAME}
     PROPERTIES

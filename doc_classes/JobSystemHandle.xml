@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="JobSystemHandle" inherits="RefCounted" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Handle to a scheduled job.
+	</brief_description>
+	<description>
+		Returned by [method JobSystem.schedule], [method JobSystem.schedule_for] and [method JobSystem.schedule_parallel_for]. Call [method complete] to block until the job finishes, or [method is_completed] to poll. The underlying job handle is released when this object is freed.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="complete">
+			<return type="void" />
+			<description>
+				Blocks until the job (and its dependencies) complete.
+			</description>
+		</method>
+		<method name="is_completed">
+			<return type="bool" />
+			<description>
+				Returns whether the job has finished.
+			</description>
+		</method>
+	</methods>
+</class>

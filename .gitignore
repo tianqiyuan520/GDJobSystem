@@ -2,9 +2,15 @@
 *.gen.*
 .godot/
 
-# Ignore library files but not the gdextension file
-/bin/**
-!project/bin/*.gdextension
+# Docs (design notes)
+docs/
+
+# SCons intermediate output
+/bin/
+
+# Ignore built binaries but keep the gdextension descriptor
+/project/addons/GDJobsystem/bin/**/*
+!/project/addons/GDJobsystem/bin/*.gdextension
 
 # Ignore scons database
 .sconsign*.dblite
@@ -38,6 +44,10 @@ compile_commands.json
 
 # Other stuff
 *.log
+*.tmp
+
+# Exported game
+/project/build/
 
 # VSCode
 .vscode/*
