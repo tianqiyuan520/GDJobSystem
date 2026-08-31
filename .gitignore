@@ -60,3 +60,7 @@ compile_commands.json
 # Cmake
 cmake-build*
 CMakeUserPresets.json
+
+# Benchmark tool (C# console) and its output
+tools/
+rel_bench2.txt
