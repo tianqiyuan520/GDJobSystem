@@ -14,10 +14,13 @@ extends Control
 ## 泳道：W0..W(n-1) + M（主线程）。lane_count = 线程数-1 时
 ## 总行数 = 线程数（最后一个 worker 的段与 M 行冲突被丢弃，见 _row_of）。
 ##
-## 性能策略：
+## 性能策略（图像烘焙）：
 ##   - 重绘节流（REDRAW_INTERVAL，交互时即时）
-##   - 可视段数超 AGG_THRESHOLD 时切换聚合模式（按泳道分桶成密度条）
-##   - 段数据不设上限（保留游戏开始至今全部）
+##   - 窗口内段先按像素列聚合（每像素列 = 时间桶，每泳道一行），
+##     写入 Image 后经 ImageTexture 一次性贴出；绘制成本与段数解耦
+##     （段数只影响每次 O(n) 的桶累加，SetPixel 次数 = 像素宽 × 泳道数）。
+##     平移/缩放/新数据触发重烘焙，交互期每帧即时烘焙，静止期随节流。
+##   - 原始 segments 全部保留（上限 MAX_SEGMENTS），点选/详情仍用精确段数据。
 ##
 ## 时间标签相对窗口左界显示（拖拽/缩放时稳定）。
 
@@ -31,12 +34,25 @@ const BG_COLOR := Color(0.11, 0.12, 0.13)
 const LANE_ALT := Color(0.145, 0.155, 0.165)
 const GRID_COLOR := Color(0.6, 0.6, 0.7, 0.32)
 const TEXT_COLOR := Color(0.82, 0.84, 0.87)
-const DIRECT_COLOR := Color(0.47, 0.78, 1.0, 0.6)
 const SEL_COLOR := Color(1.0, 1.0, 1.0)
 const FONT_SIZE := 14
-const REDRAW_INTERVAL := 3
-const AGG_THRESHOLD := 800
-const AGG_BUCKETS := 200
+# Redraw throttling: the editor main thread re-bakes and redraws the Gantt at
+# most this often (frames). A bake walks every segment in the time window into
+# pixel-column buckets, then writes the result to a texture in one pass — on
+# dense schedules the bucket walk is tens of thousands of GDScript iterations,
+# so a per-frame bake stalls the editor. Interaction (drag/zoom/animating)
+# still bakes immediately via its own branch in _process().
+const REDRAW_INTERVAL := 10
+# Hard cap on retained segments: when exceeded, drop the oldest half in one
+# batch. Prevents unbounded memory growth (and O(n) _latest_end() scans) during
+# long sessions. Live mode only ever shows the trailing time window, so old
+# segments are never visible again.
+const MAX_SEGMENTS := 60000
+# 最小/最大可视时间跨度（ms）。缩放下限 1ms ≈ 能看清单个 job 窗口内部。
+const MIN_SPAN_MS := 1.0
+const MAX_SPAN_MS := 120000.0
+# 烘焙纹理只记录有内容的像素列；密度着色阈值（同列段数 → alpha）。
+const DENSITY_SCALE := 12.0
 
 var segments: Array = []
 var lane_count := 4
@@ -51,21 +67,46 @@ var _drag_base_center := 0.0
 var _selected_index := -1
 var _redraw_tick := 0
 var _lane_h := LANE_H
+# 缩放动画锚点：鼠标下的时间点（anchor_t）在动画全程钉在鼠标位置（frac）。
+# 动画期间 span_ms 平滑变化，_center_ms 必须随 span 重算，否则窗口漂移。
+var _zoom_anchor_t := 0.0
+var _zoom_frac := 0.0
+var _zoom_active := false
+# 时间标签锚点：固定在首个接收到的段起点。标签显示 t - _ts_anchor，
+# 拖拽/缩放时 t 不变 → 标签数值稳定，只随网格线平移。
+var _ts_anchor := 0.0
+# 烘焙缓存：尺寸/窗口键 + 脏标记。数据、窗口、尺寸任一变化即重烘焙。
+var _bake_img: Image = null
+var _bake_tex: ImageTexture = null
+var _bake_dirty := true
+var _bake_w := 0
+var _bake_h := 0
+var _bake_center := 0.0
+var _bake_span := 0.0
 
 
 func add_segments(new_segs: Array) -> void:
 	if new_segs.is_empty() or paused:
 		return
 	segments.append_array(new_segs)
+	_bake_dirty = true
+	# Cap retained segments: drop the oldest half in one batch when over the
+	# limit (array head removal is O(n), so never trim per-message).
+	if segments.size() > MAX_SEGMENTS:
+		segments = segments.slice(segments.size() / 2)
+		if _selected_index >= segments.size():
+			_selected_index = -1
 	if not _aligned_once:
 		_center_ms = _latest_end()
 		_aligned_once = true
+		_ts_anchor = float(segments[0]["start_ms"])
 		queue_redraw()
 
 
 func set_live() -> void:
 	paused = false
 	_center_ms = _latest_end()
+	_bake_dirty = true
 	view_state_changed.emit(false, span_ms)
 	queue_redraw()
 
@@ -73,12 +114,13 @@ func set_live() -> void:
 func set_paused() -> void:
 	if not paused:
 		paused = true
+		_bake_dirty = true
 		view_state_changed.emit(true, span_ms)
 		queue_redraw()
 
 
 func set_span(ms: float) -> void:
-	_target_span_ms = clampf(ms, 200.0, 120000.0)
+	_target_span_ms = clampf(ms, MIN_SPAN_MS, 120000.0)
 
 
 func _ready() -> void:
@@ -92,9 +134,16 @@ func _process(delta: float) -> void:
 	var animating := absf(diff) >= 1.0
 	if animating:
 		span_ms = lerpf(span_ms, _target_span_ms, minf(1.0, delta * 10.0))
+		if _zoom_active:
+			# 动画全程保持锚点时间钉在鼠标位置：center 随当前 span 重算。
+			_center_ms = _zoom_anchor_t + (0.5 - _zoom_frac) * span_ms
+		_bake_dirty = true
+	if not animating:
+		_zoom_active = false
 	if _dragging:
 		var plot_w := maxf(size.x - LEFT_PAD, 1.0)
 		_center_ms = _drag_base_center + float(_drag_start_x - get_local_mouse_position().x) / plot_w * span_ms
+		_bake_dirty = true
 	if _dragging or animating:
 		queue_redraw()
 	else:
@@ -144,6 +193,7 @@ func _gui_input(event: InputEvent) -> void:
 				_zoom_at(mb.position.x, 1.18)
 		elif mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				_zoom_active = false  # 拖拽接管 center，停止缩放锚定
 				_dragging = true
 				_drag_start_x = int(get_local_mouse_position().x)
 				_drag_base_center = _center_ms
@@ -159,8 +209,12 @@ func _zoom_at(px_x: float, factor: float) -> void:
 	var plot_w := maxf(size.x - LEFT_PAD, 1.0)
 	var frac := (px_x - LEFT_PAD) / plot_w
 	var anchor_t := _win_left() + frac * span_ms
-	_target_span_ms = clampf(span_ms * factor, 200.0, 120000.0)
-	_center_ms = anchor_t + (0.5 - frac) * _target_span_ms
+	_zoom_anchor_t = anchor_t
+	_zoom_frac = frac
+	_zoom_active = true
+	_target_span_ms = clampf(span_ms * factor, MIN_SPAN_MS, MAX_SPAN_MS)
+	# 立即按当前 span 锚定，避免动画首帧跳变；后续帧由 _process 重算。
+	_center_ms = anchor_t + (0.5 - frac) * span_ms
 
 
 func _pick_at(p: Vector2) -> void:
@@ -202,15 +256,25 @@ func _draw() -> void:
 		step = 2000.0
 	elif span_ms > 5000.0:
 		step = 500.0
-	elif span_ms < 1500.0:
+	elif span_ms > 1500.0:
+		step = 100.0
+	elif span_ms > 300.0:
 		step = 50.0
+	elif span_ms > 60.0:
+		step = 10.0
+	elif span_ms > 15.0:
+		step = 5.0
+	elif span_ms > 3.0:
+		step = 1.0
+	else:
+		step = 0.25
 	var t: float = win_left - fmod(win_left, step)
 	while t <= win_right:
 		var px: float = LEFT_PAD + (t - win_left) / span_ms * plot_w
 		draw_line(Vector2(px, TOP_PAD - 4), Vector2(px, size.y), GRID_COLOR, 1.0)
 		if t >= win_left:
 			draw_string(ThemeDB.fallback_font, Vector2(px + 3, TOP_PAD - 9),
-					_ts(t), HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TEXT_COLOR)
+					_ts(t, step), HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TEXT_COLOR)
 		t += step
 
 	var lanes := _lane_count_drawn()
@@ -223,21 +287,17 @@ func _draw() -> void:
 		draw_string(ThemeDB.fallback_font, Vector2(LEFT_PAD * 0.22, y + _lane_h * 0.7),
 				label, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TEXT_COLOR)
 
-	var visible: Array = []
-	for i in range(segments.size() - 1, -1, -1):
-		var s: Dictionary = segments[i]
-		var row := _row_of(int(s["lane"]))
-		if row < 0:
-			continue
-		if float(s["end_ms"]) < win_left:
-			break
-		if float(s["start_ms"]) > win_right:
-			continue
-		visible.append(s)
-	if visible.size() > AGG_THRESHOLD:
-		_draw_aggregated(visible, win_left, span_ms, plot_w, lanes)
-	else:
-		_draw_individual(visible, win_left, span_ms, plot_w, lanes)
+	_ensure_bake(win_left, win_right, plot_w, lanes)
+	if _bake_tex != null:
+		# 逐泳道绘制：每行只拉伸该泳道 1 像素行，高 _lane_h - 4（行间留 4px
+		# 间隙，恢复方块感——整图拉伸会把相邻泳道的段上下连成一片）。
+		# draw 次数 = 泳道数（≤ 线程数），与段数无关，性能不受影响。
+		var src_w := float(_bake_img.get_width())
+		for row in lanes:
+			var y := TOP_PAD + 2.0 + row * _lane_h
+			draw_texture_rect_region(_bake_tex,
+					Rect2(LEFT_PAD, y, plot_w, _lane_h - 4.0),
+					Rect2(0, row, src_w, 1), Color.WHITE, false)
 
 	if _selected_index >= 0 and _selected_index < segments.size():
 		var s: Dictionary = segments[_selected_index]
@@ -249,62 +309,70 @@ func _draw() -> void:
 			draw_rect(Rect2(x0, y, maxf(x1 - x0, 2.0), _lane_h - 4.0), SEL_COLOR, false, 2.0)
 
 
-func _draw_individual(visible: Array, win_left: float, span: float, plot_w: float, lanes: int) -> void:
-	for s in visible:
-		var row := _row_of(int(s["lane"]))
-		if row < 0:
-			continue
-		var x0 := LEFT_PAD + (float(s["start_ms"]) - win_left) / span * plot_w
-		var x1 := LEFT_PAD + (float(s["end_ms"]) - win_left) / span * plot_w
-		if x1 < LEFT_PAD or x0 > size.x:
-			continue
-		var bw := maxf(x1 - x0, 2.0)
-		var y := TOP_PAD + row * _lane_h + 2.0
-		var col := DIRECT_COLOR if bool(s.get("direct", false)) \
-				else _duration_color(float(s["end_ms"]) - float(s["start_ms"]))
-		draw_rect(Rect2(x0, y, bw, _lane_h - 4.0), col)
-		draw_rect(Rect2(x0, y, bw, _lane_h - 4.0), Color(0, 0, 0, 0.45), false, 1.0)
-		if bw > 64.0:
-			draw_string(ThemeDB.fallback_font, Vector2(x0 + 5, y + (_lane_h - 4.0) * 0.72),
-					"%.2fms" % (float(s["end_ms"]) - float(s["start_ms"])),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1, 1, 1, 0.92))
+func _ensure_bake(win_left: float, win_right: float, plot_w: float, lanes: int) -> void:
+	# 缓存命中：数据/窗口/尺寸均未变（交互期 _bake_dirty 每帧为 true → 每帧重烘焙）
+	var pw := maxi(int(plot_w), 1)
+	if not _bake_dirty and _bake_tex != null \
+			and _bake_w == pw and _bake_h == lanes \
+			and is_equal_approx(_bake_center, _center_ms) \
+			and is_equal_approx(_bake_span, span_ms):
+		return
+	if _bake_img == null or _bake_img.get_width() != pw or _bake_img.get_height() != lanes:
+		_bake_img = Image.create(pw, lanes, false, Image.FORMAT_RGBA8)
+	_bake_img.fill(Color(0, 0, 0, 0))
 
-
-func _draw_aggregated(visible: Array, win_left: float, span: float, plot_w: float, lanes: int) -> void:
-	var bucket_w := span / AGG_BUCKETS
-	var agg := {}
-	for lane in lanes:
-		var buckets := []
-		buckets.resize(AGG_BUCKETS)
-		for b in AGG_BUCKETS:
-			buckets[b] = {"count": 0, "sum_dur": 0.0}
-		agg[lane] = buckets
-	for s in visible:
+	# 像素列聚合：每泳道一行，每列累加段计数与总时长（SetPixel 次数 = pw × lanes，
+	# 与段数无关；段数只影响下面这一次 O(n) 遍历）。
+	var scale := pw / span_ms
+	var counts := PackedFloat32Array()
+	var sums := PackedFloat32Array()
+	counts.resize(pw * lanes)
+	sums.resize(pw * lanes)
+	counts.fill(0.0)
+	sums.fill(0.0)
+	for i in range(segments.size() - 1, -1, -1):
+		var s: Dictionary = segments[i]
 		var row := _row_of(int(s["lane"]))
 		if row < 0:
 			continue
 		var st := float(s["start_ms"])
 		var en := float(s["end_ms"])
+		if en < win_left:
+			break
+		if st > win_right:
+			continue
+		var x0 := int((st - win_left) * scale)
+		var x1 := int((en - win_left) * scale)
+		if x1 < 0 or x0 >= pw:
+			continue
+		x0 = maxi(x0, 0)
+		x1 = mini(x1, pw - 1)
 		var dur := en - st
-		var b0 := clampi(int((st - win_left) / bucket_w), 0, AGG_BUCKETS - 1)
-		var b1 := clampi(int((en - win_left) / bucket_w), 0, AGG_BUCKETS - 1)
-		for b in range(b0, b1 + 1):
-			var cell: Dictionary = agg[row][b]
-			cell["count"] += 1
-			cell["sum_dur"] += dur
+		var base := row * pw
+		for x in range(x0, x1 + 1):
+			var idx := base + x
+			counts[idx] += 1.0
+			sums[idx] += dur
 	for row in lanes:
-		for b in AGG_BUCKETS:
-			var cell: Dictionary = agg[row][b]
-			var count: int = cell["count"]
-			if count == 0:
+		var base := row * pw
+		for x in pw:
+			var count := counts[base + x]
+			if count <= 0.0:
 				continue
-			var x0 := LEFT_PAD + b * bucket_w / span * plot_w
-			var x1 := LEFT_PAD + (b + 1) * bucket_w / span * plot_w
-			var y := TOP_PAD + row * _lane_h + 2.0
-			var avg_dur: float = cell["sum_dur"] / count
-			var col := _duration_color(avg_dur)
-			col.a = 0.25 + 0.65 * minf(1.0, count / 12.0)
-			draw_rect(Rect2(x0, y, maxf(x1 - x0, 1.0), _lane_h - 4.0), col)
+			var col := _duration_color(sums[base + x] / count)
+			col.a = 0.25 + 0.65 * minf(1.0, count / DENSITY_SCALE)
+			_bake_img.set_pixel(x, row, col)
+	if _bake_tex == null or _bake_tex.get_width() != pw or _bake_tex.get_height() != lanes:
+		# 尺寸变化（窗口/泳道数变化）时必须重建纹理：update() 要求图像与
+		# 原纹理尺寸一致，否则报 "new image dimensions must match"。
+		_bake_tex = ImageTexture.create_from_image(_bake_img)
+	else:
+		_bake_tex.update(_bake_img)
+	_bake_dirty = false
+	_bake_w = pw
+	_bake_h = lanes
+	_bake_center = _center_ms
+	_bake_span = span_ms
 
 
 func _duration_color(dur_ms: float) -> Color:
@@ -315,8 +383,24 @@ func _duration_color(dur_ms: float) -> Color:
 	return Color.from_hsv((1.0 - hh) * 120.0 / 360.0, 0.8, 0.9, 0.86)
 
 
-func _ts(t: float) -> String:
-	var rel := t - _win_left()
-	if absf(rel) >= 1000.0:
-		return "%.2fs" % (rel / 1000.0)
-	return "%.0fms" % rel
+func _ts(t: float, step: float) -> String:
+	# 相对锚点（首个段起点）显示，拖拽/缩放时标签数值不随窗口变动。
+	# 精度由网格步长决定（否则放大后相邻刻度无法区分，全部四舍五入成
+	# 同一个值）：步长越小，小数位越多。
+	var rel := t - _ts_anchor
+	var abs_rel := absf(rel)
+	if abs_rel >= 1000.0:
+		# 大时间量级：显示秒，小数位由步长决定（0.25ms 步长需要 4 位小数秒）。
+		if step >= 100.0:
+			return "%.2fs" % (rel / 1000.0)
+		if step >= 10.0:
+			return "%.3fs" % (rel / 1000.0)
+		return "%.4fs" % (rel / 1000.0)
+	# 小时间量级：毫秒/微秒，小数位同样由步长决定。
+	if abs_rel >= 1.0:
+		if step >= 10.0:
+			return "%.0fms" % rel
+		if step >= 1.0:
+			return "%.1fms" % rel
+		return "%.2fms" % rel
+	return "%.0fµs" % (rel * 1000.0)

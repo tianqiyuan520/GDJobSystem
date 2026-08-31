@@ -32,6 +32,7 @@
 #include "JobSystemInternal.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -50,6 +51,10 @@ namespace godot {
 // scene tree / node state from inside a job.
 // ---------------------------------------------------------------------------
 namespace {
+
+// 游戏启动时间基准（系统启动毫秒）：initialize() 时固定。内核时间戳是
+// 系统启动基准，发送给甘特图时减去它 → 甘特图时间从游戏启动起算。
+std::atomic<double> s_time_origin_ms{ 0.0 };
 
 struct CallableContext {
 	Callable callable;
@@ -197,6 +202,10 @@ void JobSystem::initialize(int p_threads) {
 		return;
 	}
 	s_main_thread_id = std::this_thread::get_id();
+	// 固定调试时间基准（游戏启动时刻）：内核时间戳（系统启动基准）减去它，
+	// 甘特图时间从游戏启动起算。
+	s_time_origin_ms.store(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+			std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
 	js::Scheduler::Initialize(p_threads);
 	s_scheduler_initialized.store(true, std::memory_order_relaxed);
 	// Adaptive tile learning (JobCostCache) on by default; disable via
@@ -333,10 +342,13 @@ std::atomic<bool> s_debugger_paused{ false };
 // One-shot guard for the message-capture registration.
 std::atomic<bool> s_capture_registered{ false };
 
-void _on_debugger_message(const String &p_message, const Array &p_data) {
+// EngineDebugger message-capture callbacks must return bool ("message consumed");
+// a void return trips the engine's "Return type is not bool" check.
+bool _on_debugger_message(const String &p_message, const Array &p_data) {
 	if (p_message == "set_paused" || p_message == "gd_job_system_ctl:set_paused") {
 		s_debugger_paused.store(p_data.size() > 0 && (bool)p_data[0], std::memory_order_relaxed);
 	}
+	return true; // consumed
 }
 } // namespace
 
@@ -357,24 +369,31 @@ void JobSystem::debugger_poll() {
 		s_capture_registered.store(true, std::memory_order_relaxed);
 	}
 
+	// Shared poll counter: worker_snap every 3rd poll, stats/jcc every 30th.
+	// (Unthrottled per-frame streaming overflows the editor debugger queue on
+	// dense schedules — "Too many messages! N messages were dropped".)
+	const unsigned int counter = s_poll_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+
 	// 1) Per-worker snapshot.
-	Array data;
-	const int worker_count = js::CurrentWorkerCount();
-	for (int i = 0; i < worker_count; i++) {
-		Dictionary w;
-		// acquire load of the active flag synchronizes with the kernel's
-		// release store in DebugBeginExec/DebugEndExec, so the other fields
-		// are read after their writes are visible.
-		w["index"] = i;
-		w["active"] = (bool)js::g_workerIsActive[i].load(std::memory_order_acquire);
-		w["batch_id"] = (uint64_t)js::g_workerCurrentBatchId[i].load(std::memory_order_relaxed);
-		// The kernel never updates g_workerCurrentTile (it stays 0); only the
-		// planned per-batch tile count (g_workerBatchTileCount) is meaningful.
-		w["tile"] = (int)js::g_workerCurrentTile[i].load(std::memory_order_relaxed);
-		w["tile_count"] = (int)js::g_workerBatchTileCount[i].load(std::memory_order_relaxed);
-		data.append(w);
+	if (counter % 3 == 0) {
+		Array data;
+		const int worker_count = js::CurrentWorkerCount();
+		for (int i = 0; i < worker_count; i++) {
+			Dictionary w;
+			// acquire load of the active flag synchronizes with the kernel's
+			// release store in DebugBeginExec/DebugEndExec, so the other fields
+			// are read after their writes are visible.
+			w["index"] = i;
+			w["active"] = (bool)js::g_workerIsActive[i].load(std::memory_order_acquire);
+			w["batch_id"] = (uint64_t)js::g_workerCurrentBatchId[i].load(std::memory_order_relaxed);
+			// The kernel never updates g_workerCurrentTile (it stays 0); only the
+			// planned per-batch tile count (g_workerBatchTileCount) is meaningful.
+			w["tile"] = (int)js::g_workerCurrentTile[i].load(std::memory_order_relaxed);
+			w["tile_count"] = (int)js::g_workerBatchTileCount[i].load(std::memory_order_relaxed);
+			data.append(w);
+		}
+		dbg->send_message("gd_job_system:worker_snap", data);
 	}
-	dbg->send_message("gd_job_system:worker_snap", data);
 
 	// 2) New timeline segments since the last poll (execution windows).
 	const unsigned int visible = js::g_debugSegVisible.load(std::memory_order_acquire);
@@ -386,8 +405,10 @@ void JobSystem::debugger_poll() {
 			Dictionary d;
 			d["lane"] = s.lane;
 			d["batch_id"] = (uint64_t)s.batchId;
-			d["start_ms"] = s.startMs;
-			d["end_ms"] = s.endMs;
+			// 内核时间戳为系统启动基准；减去游戏启动基准 → 相对游戏启动。
+			const double origin = s_time_origin_ms.load(std::memory_order_relaxed);
+			d["start_ms"] = s.startMs - origin;
+			d["end_ms"] = s.endMs - origin;
 			d["tiles"] = (int)s.tiles;
 			d["workers"] = (int)s.workers;
 			d["direct"] = (bool)s.isDirect;
@@ -398,7 +419,6 @@ void JobSystem::debugger_poll() {
 	}
 
 	// 3) Stats + JobCostCache every ~30 polls (heavier payloads).
-	const unsigned int counter = s_poll_counter.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (counter % 30 == 0) {
 		Array stats_payload;
 		stats_payload.append(get_stats_snapshot());
