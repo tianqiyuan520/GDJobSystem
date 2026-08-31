@@ -1,0 +1,6 @@
+[submodule "EntJoy"]
+	path = third_party/EntJoy
+	url = https://github.com/tianqiyuan520/EntJoy.git
+[submodule "godot-cpp"]
+	path = godot-cpp
+	url = https://github.com/godotengine/godot-cpp.git

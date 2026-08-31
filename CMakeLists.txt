@@ -24,7 +24,7 @@ if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/godot-cpp/src")
         COMMAND_ERROR_IS_FATAL ANY
     )
 endif()
-# The JobSystem kernel (src/native) needs C++ exceptions (std::exception_ptr);
+# The JobSystem kernel (third_party/EntJoy/src/NativeDll) needs C++ exceptions (std::exception_ptr);
 # godot-cpp's CMake module disables them by default.
 set(GODOTCPP_DISABLE_EXCEPTIONS OFF)
 add_subdirectory(godot-cpp SYSTEM)
@@ -60,18 +60,22 @@ target_sources(${LIBNAME}
     src/register_types.h
     src/job_system.cpp
     src/job_system.h
-    src/native/JobSystem.cpp
-    src/native/JobSystem_State.cpp
-    src/native/JobSystem_Tiles.cpp
-    src/native/JobSystem_Scheduler.cpp
-    src/native/ChaseLevScheduler.cpp
-    src/native/JobProfiler.cpp
-    src/native/JobDebuggerGUI_stub.cpp
+    # EntJoy kernel consumed from the submodule via an explicit list: the
+    # NativeDll directory also contains Exports.cpp / Native.cpp / tasksys.cpp /
+    # JobDebuggerGUI.cpp (C# P/Invoke + ImGui layers) which must NOT be built here.
+    third_party/EntJoy/src/NativeDll/JobSystem.cpp
+    third_party/EntJoy/src/NativeDll/JobSystem_State.cpp
+    third_party/EntJoy/src/NativeDll/JobSystem_Tiles.cpp
+    third_party/EntJoy/src/NativeDll/JobSystem_Scheduler.cpp
+    third_party/EntJoy/src/NativeDll/ChaseLevScheduler.cpp
+    third_party/EntJoy/src/NativeDll/JobProfiler.cpp
+    src/job_debugger_gui_stub.cpp
 )
 
 # JobSystem kernel requires C++20 (std::atomic::wait/notify) and exports
-# internal debug hooks guarded by JOB_SYSTEM_EXPORT.
-add_compile_definitions(JOB_SYSTEM_EXPORT)
+# internal debug hooks guarded by JOB_SYSTEM_EXPORT; the C# P/Invoke layer
+# is exported via GDJS_EXPORTS.
+add_compile_definitions(JOB_SYSTEM_EXPORT GDJS_EXPORTS)
 
 # Fetch a list of the xml files to use for documentation and add to our target
 file(GLOB_RECURSE DOC_XML LIST_DIRECTORIES NO CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/doc_classes/*.xml")
@@ -84,6 +88,11 @@ if(DOC_XML)
 endif()
 
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
+
+target_include_directories(${LIBNAME} PRIVATE
+    "${PROJECT_SOURCE_DIR}/src"
+    "${PROJECT_SOURCE_DIR}/third_party/EntJoy/src/NativeDll"
+)
 
 # Require at least C++20 for this target
 set_property(TARGET ${LIBNAME} PROPERTY CXX_STANDARD 20)

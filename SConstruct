@@ -10,7 +10,7 @@ projectdir = "project"
 
 localEnv = Environment(tools=["default"], PLATFORM="")
 
-# The JobSystem kernel (src/native) relies on C++ exceptions
+# The JobSystem kernel (third_party/EntJoy) relies on C++ exceptions
 # (std::exception_ptr in HandleState); godot-cpp defaults to no exceptions.
 localEnv["disable_exceptions"] = False
 
@@ -41,7 +41,7 @@ Run the following command to download godot-cpp:
 
 env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
-# The EntJoy JobSystem kernel (src/native) requires C++20 (std::atomic::wait/notify)
+# The EntJoy JobSystem kernel (third_party/EntJoy/src/NativeDll) requires C++20 (std::atomic::wait/notify)
 # and exports its internal debug hooks guarded by JOB_SYSTEM_EXPORT.
 # Drop godot-cpp's default C++17 flag first to avoid MSVC D9025 redefinition warnings.
 env["CXXFLAGS"] = [f for f in env.get("CXXFLAGS", []) if "std:c++17" not in f and "std=c++17" not in f]
@@ -49,10 +49,23 @@ if env.get("is_msvc", False):
     env.Append(CXXFLAGS=["/std:c++20"])
 else:
     env.Append(CXXFLAGS=["-std=c++20"])
-env.Append(CPPDEFINES=["JOB_SYSTEM_EXPORT"])
+env.Append(CPPDEFINES=["JOB_SYSTEM_EXPORT", "GDJS_EXPORTS"])
 
-env.Append(CPPPATH=["src/", "src/native/"])
-sources = Glob("src/*.cpp") + Glob("src/native/*.cpp")
+env.Append(CPPPATH=["src/", "third_party/EntJoy/src/NativeDll/"])
+
+# EntJoy kernel sources are consumed from the submodule (third_party/EntJoy,
+# sparse-checkout of src/NativeDll) via an explicit list: the NativeDll
+# directory also contains Exports.cpp / Native.cpp / tasksys.cpp /
+# JobDebuggerGUI.cpp (C# P/Invoke + ImGui layers) which must NOT be compiled here.
+kernel_sources = [
+    "third_party/EntJoy/src/NativeDll/JobSystem.cpp",
+    "third_party/EntJoy/src/NativeDll/JobSystem_State.cpp",
+    "third_party/EntJoy/src/NativeDll/JobSystem_Tiles.cpp",
+    "third_party/EntJoy/src/NativeDll/JobSystem_Scheduler.cpp",
+    "third_party/EntJoy/src/NativeDll/ChaseLevScheduler.cpp",
+    "third_party/EntJoy/src/NativeDll/JobProfiler.cpp",
+]
+sources = Glob("src/*.cpp") + kernel_sources
 
 if env["target"] in ["editor", "template_debug"]:
     try:

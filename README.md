@@ -11,7 +11,7 @@ Two independent pieces, both under `project/addons/GDJobsystem/`:
 | **GDExtension** (`bin/gd_job_system.gdextension` + DLL) | `JobSystem` / `JobSystemHandle` classes, usable from GDScript at runtime | Godot scans `.gdextension` automatically |
 | **Editor plugin** (`plugin.gd` + `monitor/`) | "JobSystem 监控器" debugger tab (Gantt timeline, stats, activity, JobCostCache) | `[editor_plugins]` in `project.godot` |
 
-The kernel (Chase-Lev work-stealing scheduler, MPMC injector, tile-based parallel execution) lives in [src/native](./src/native/) and is kept **verbatim from EntJoy's `NativeDll`** so it can be re-copied on updates. The binding layer (`src/job_system.*`) adapts it to GDScript. C++20 and exceptions are required.
+The kernel (Chase-Lev work-stealing scheduler, MPMC injector, tile-based parallel execution) comes **verbatim from EntJoy's `NativeDll`** via the git submodule `third_party/EntJoy` (sparse-checkout of `src/NativeDll`, pinned to commit `424e7b3`). The binding layer (`src/job_system.*`) adapts it to GDScript. C++20 and exceptions are required. Build consumes the kernel through an explicit source list (`SConstruct`), excluding the C# P/Invoke (`Exports.cpp`/`Native.cpp`) and ImGui (`JobDebuggerGUI.cpp`/`tasksys.cpp`) layers that live in the same directory.
 
 ## GDScript usage
 
@@ -52,7 +52,7 @@ The data flows game → editor over `EngineDebugger` messages (`gd_job_system:*`
 - Callbacks run on worker threads: do **not** touch the scene tree or node state inside a job.
 - Dependency graphs must be acyclic; the scheduler does no cycle detection (a cycle makes `complete()` hang forever).
 - `shutdown()` must run on the same thread as `initialize()` (joining a worker from itself would deadlock). It drains all in-flight jobs first, so pending work completes before teardown.
-- If you edit `src/native/`, expect to be overwritten by the next EntJoy copy — keep your changes in the binding layer instead.
+- If you edit files under `third_party/EntJoy/src/NativeDll/`, expect them to be overwritten by the next EntJoy submodule update — keep your changes in the binding layer instead.
 
 ## Benchmark
 

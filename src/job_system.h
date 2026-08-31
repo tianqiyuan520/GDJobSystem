@@ -1,7 +1,7 @@
 // ============================================================================
 // GDJobsystem — GDExtension 绑定层
 // ============================================================================
-// 把 EntJoy JobSystem 内核（src/native/，Chase-Lev 工作窃取调度器）暴露为
+// 把 EntJoy JobSystem 内核（third_party/EntJoy/src/NativeDll，Chase-Lev 工作窃取调度器）暴露为
 // Godot 类，供 GDScript 使用：
 //
 //   JobSystem        静态门面类：initialize / shutdown / schedule / schedule_for
@@ -29,7 +29,7 @@
 #include "godot_cpp/variant/dictionary.hpp"
 #include "godot_cpp/variant/string.hpp"
 
-#include "native/JobSystem.h"
+#include "JobSystem.h"
 
 namespace godot {
 

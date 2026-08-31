@@ -28,8 +28,8 @@
 #include "godot_cpp/variant/dictionary.hpp"
 #include "godot_cpp/variant/utility_functions.hpp"
 
-#include "native/JobSystem.h"
-#include "native/JobSystemInternal.h"
+#include "JobSystem.h"
+#include "JobSystemInternal.h"
 
 #include <atomic>
 #include <condition_variable>
