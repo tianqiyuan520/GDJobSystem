@@ -64,7 +64,7 @@ void JobSystemDebuggerPlugin::_update_snapshot(int32_t p_session_id, const Array
 		item->set_text(0, vformat("Worker %d", (int)w["index"]));
 		item->set_text(1, active ? "busy" : "idle");
 		if (active) {
-			item->set_text(2, vformat("%llu", (unsigned long long)(uint64_t)w["batch_id"]));
+			item->set_text(2, String::num_uint64((uint64_t)w["batch_id"]));
 			item->set_text(3, vformat("%d / %d", (int)w["tile"], (int)w["tile_count"]));
 		}
 	}

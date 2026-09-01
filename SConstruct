@@ -51,6 +51,11 @@ else:
     env.Append(CXXFLAGS=["-std=c++20"])
 env.Append(CPPDEFINES=["JOB_SYSTEM_EXPORT", "GDJS_EXPORTS"])
 
+# MinGW 没有 #pragma comment(lib) 机制，Scheduler::Initialize 的 timeBeginPeriod
+# 需显式链接 winmm（MSVC 由 JobSystem_Scheduler.cpp 内的 pragma 处理）。
+if env["platform"] == "windows" and not env.get("is_msvc", False):
+    env.Append(LIBS=["winmm"])
+
 env.Append(CPPPATH=["src/", "third_party/EntJoy/src/NativeDll/"])
 
 # EntJoy kernel sources are consumed from the submodule (third_party/EntJoy,
