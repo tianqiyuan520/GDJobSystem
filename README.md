@@ -1,5 +1,7 @@
 # GDJobsystem
 
+[English](./README.md) · [中文](./README.zh-CN.md)
+
 A Godot 4 multi-threaded Job System GDExtension plugin (C++), built on the [godot-cpp template](https://github.com/godotengine/godot-cpp-template).
 
 ## Architecture
@@ -11,7 +13,7 @@ Two independent pieces, both under `project/addons/GDJobsystem/`:
 | **GDExtension** (`bin/gd_job_system.gdextension` + DLL) | `JobSystem` / `JobSystemHandle` classes, usable from GDScript at runtime | Godot scans `.gdextension` automatically |
 | **Editor plugin** (`plugin.gd` + `monitor/`) | "JobSystem 监控器" debugger tab (Gantt timeline, stats, activity, JobCostCache) | `[editor_plugins]` in `project.godot` |
 
-The kernel (Chase-Lev work-stealing scheduler, MPMC injector, tile-based parallel execution) comes **verbatim from EntJoy's `NativeDll`** via the git submodule `third_party/EntJoy` (sparse-checkout of `src/NativeDll`, pinned to commit `424e7b3`). The binding layer (`src/job_system.*`) adapts it to GDScript. C++20 and exceptions are required. Build consumes the kernel through an explicit source list (`SConstruct`), excluding the C# P/Invoke (`Exports.cpp`/`Native.cpp`) and ImGui (`JobDebuggerGUI.cpp`/`tasksys.cpp`) layers that live in the same directory.
+The kernel (Chase-Lev work-stealing scheduler, MPMC injector, tile-based parallel execution) comes **verbatim from EntJoy's `NativeDll`** via the git submodule `third_party/EntJoy` (sparse-checkout of `src/NativeDll`, pinned to commit `a1ef6ae`). The binding layer (`src/job_system.*`) adapts it to GDScript. C++20 and exceptions are required. Build consumes the kernel through an explicit source list (`SConstruct`), excluding the C# P/Invoke (`Exports.cpp`/`Native.cpp`) and ImGui (`JobDebuggerGUI.cpp`/`tasksys.cpp`) layers that live in the same directory.
 
 ## GDScript usage
 

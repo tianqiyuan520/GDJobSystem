@@ -94,5 +94,23 @@
 				Combines multiple JobSystemHandle into one handle that completes when all of them complete.
 			</description>
 		</method>
+		<method name="debugger_poll" qualifiers="static">
+			<return type="void" />
+			<description>
+				Sends the current per-worker snapshot, timeline and statistics to the editor's JobSystem debugger tab via EngineDebugger. No-op when no debugger is attached. Call periodically (e.g. every frame or every 0.2 s).
+			</description>
+		</method>
+		<method name="get_stats_snapshot" qualifiers="static">
+			<return type="Dictionary" />
+			<description>
+				Returns a snapshot of the scheduler's statistics counters as a dictionary (see JobSystemStatsSnapshot for the field set).
+			</description>
+		</method>
+		<method name="get_job_cost_cache_slots" qualifiers="static">
+			<return type="Array" />
+			<description>
+				Returns the JobCostCache slots that have learned a cost model, as an array of dictionaries with keys slot, hash, mode, per_elem_ns and per_tile_ns.
+			</description>
+		</method>
 	</methods>
 </class>
